@@ -1,0 +1,1 @@
+{"prompt": [{"role": "user", "content": "صحح الكلمة الخاطئة المحددة في النص التالي، وأعد الكلمة المصححة فقط.\nالنص: هذه جملة تجريبية.\nالكلمة الخاطئة: تجريبية"}], "completion": [{"role": "assistant", "content": "تجريبية"}], "source": "PLACEHOLDER_ONLY_DO_NOT_TRAIN", "split": "train"}
