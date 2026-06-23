@@ -1,0 +1,10 @@
+torch>=2.3
+transformers>=4.53
+datasets>=3.0
+accelerate>=1.0
+peft>=0.15
+trl>=0.23
+bitsandbytes>=0.45; platform_system != "Darwin"
+sentencepiece
+requests
+tqdm
