@@ -41,16 +41,17 @@ def group_members(rows):
 
 
 def write_fixture_archive(path, groups=GROUPS, extra_members=None):
+    extra_members = dict(extra_members or [])
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr(f"{ROOT_NAME}/README.txt", "fixture readme".encode("utf-8-sig"))
         archive.writestr(f"{ROOT_NAME}/LICENSE.txt", "fixture license".encode("utf-8-sig"))
         for (year, track, split), rows in groups.items():
             sent, cor, m2 = group_members(rows)
             stem = member_stem(year, track, split)
-            archive.writestr(f"{stem}.sent", sent)
-            archive.writestr(f"{stem}.cor", cor)
-            archive.writestr(f"{stem}.m2", m2)
-        for name, payload in extra_members or []:
+            for suffix, payload in (("sent", sent), ("cor", cor), ("m2", m2)):
+                name = f"{stem}.{suffix}"
+                archive.writestr(name, extra_members.pop(name, payload))
+        for name, payload in extra_members.items():
             archive.writestr(name, payload)
 
 
@@ -66,6 +67,10 @@ class QalbManifestTests(unittest.TestCase):
             json.dumps([{"passage": "NAHW_MATCH"}], ensure_ascii=False),
             encoding="utf-8",
         )
+
+    def rebuild_with_groups(self, groups, extra_members=None):
+        self.archive.unlink()
+        write_fixture_archive(self.archive, groups, extra_members)
 
     def test_preserves_within_train_duplicates_and_applies_leakage_policy(self):
         registry, metadata = build_manifest_data(self.archive, self.nahw)
@@ -92,6 +97,62 @@ class QalbManifestTests(unittest.TestCase):
         self.assertTrue(
             all(not row["eligible_for_development"] for row in registry if row["split"] == "test")
         )
+
+    def test_rejects_parallel_record_count_mismatch(self):
+        key = (2015, "L2", "dev")
+        stem = member_stem(*key)
+        _, cor, _ = group_members(GROUPS[key])
+        self.rebuild_with_groups(
+            GROUPS,
+            extra_members=[(f"{stem}.cor", cor + b"S EXTRA\n")],
+        )
+
+        with self.assertRaisesRegex(ValueError, "Parallel record count mismatch"):
+            build_manifest_data(self.archive, self.nahw)
+
+    def test_rejects_duplicate_document_ids_within_split(self):
+        groups = dict(GROUPS)
+        groups[(2015, "L2", "train")] = [
+            ("same.ar", "FIRST_SOURCE", "FIRST_CORRECTION"),
+            ("same.ar", "SECOND_SOURCE", "SECOND_CORRECTION"),
+        ]
+        self.rebuild_with_groups(groups)
+
+        with self.assertRaisesRegex(ValueError, "Duplicate document ID"):
+            build_manifest_data(self.archive, self.nahw)
+
+    def test_rejects_m2_source_order_mismatch(self):
+        key = (2014, "L1", "dev")
+        stem = member_stem(*key)
+        _, _, m2 = group_members(GROUPS[key])
+        self.rebuild_with_groups(
+            GROUPS,
+            extra_members=[
+                (f"{stem}.m2", m2.replace(b"DEV_KEEP", b"DEV_WRONG"))
+            ],
+        )
+
+        with self.assertRaisesRegex(ValueError, "source order mismatch"):
+            build_manifest_data(self.archive, self.nahw)
+
+    def test_reports_invalid_utf8_archive_member(self):
+        stem = member_stem(2015, "L2", "train")
+        self.rebuild_with_groups(
+            GROUPS,
+            extra_members=[(f"{stem}.sent", b"\xff")],
+        )
+
+        with self.assertRaisesRegex(ValueError, r"not valid UTF-8: .*L2-Train\.sent"):
+            build_manifest_data(self.archive, self.nahw)
+
+    def test_rejects_unsafe_zip_member_path(self):
+        self.rebuild_with_groups(
+            GROUPS,
+            extra_members=[("../escape.txt", b"unused")],
+        )
+
+        with self.assertRaisesRegex(ValueError, "Unsafe ZIP member path"):
+            build_manifest_data(self.archive, self.nahw)
 
 
 if __name__ == "__main__":

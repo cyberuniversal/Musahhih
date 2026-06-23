@@ -7,7 +7,7 @@ from collections import Counter
 from dataclasses import dataclass
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import zipfile
 
 
@@ -81,7 +81,24 @@ def sha256_path(path: Path) -> str:
 
 
 def decode_member(payload: bytes, member: str) -> str:
-    return payload.decode("utf-8-sig")
+    try:
+        return payload.decode("utf-8-sig")
+    except UnicodeDecodeError as error:
+        raise ManifestError(f"Archive member is not valid UTF-8: {member}") from error
+
+
+def validate_archive_members(archive: zipfile.ZipFile) -> None:
+    for info in archive.infolist():
+        member = info.filename
+        if (
+            member.startswith("/")
+            or "\\" in member
+            or ".." in PurePosixPath(member).parts
+            or (len(member) > 1 and member[1] == ":")
+        ):
+            raise ManifestError(f"Unsafe ZIP member path: {member}")
+        if info.flag_bits & 0x1:
+            raise ManifestError(f"Encrypted ZIP member is not supported: {member}")
 
 
 def parse_sent(text: str, member: str):
@@ -138,6 +155,7 @@ def build_manifest_data(archive_path: Path, nahw_path: Path):
     required_docs = {f"{ROOT_NAME}/README.txt", f"{ROOT_NAME}/LICENSE.txt"}
 
     with zipfile.ZipFile(archive_path) as archive:
+        validate_archive_members(archive)
         names = set(archive.namelist())
         missing_docs = sorted(required_docs - names)
         if missing_docs:
@@ -172,6 +190,13 @@ def build_manifest_data(archive_path: Path, nahw_path: Path):
             m2_sources = parse_m2_sources(
                 decode_member(payloads["m2"], members["m2"])
             )
+            if len({len(sent_rows), len(corrections), len(m2_sources)}) != 1:
+                raise ManifestError(f"Parallel record count mismatch: {spec.stem}")
+            document_ids = [document_id for document_id, _ in sent_rows]
+            if len(document_ids) != len(set(document_ids)):
+                raise ManifestError(f"Duplicate document ID: {spec.stem}")
+            if [source for _, source in sent_rows] != m2_sources:
+                raise ManifestError(f"M2 source order mismatch: {spec.stem}")
             for line_number, ((document_id, source), correction) in enumerate(
                 zip(sent_rows, corrections), 1
             ):
