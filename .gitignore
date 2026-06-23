@@ -20,7 +20,7 @@ data/raw/
 data/processed/
 
 # Keep the sample format
-a!data/train.sample.jsonl
+!data/train.sample.jsonl
 
 # Editors and OS
 .vscode/
