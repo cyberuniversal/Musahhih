@@ -1,6 +1,8 @@
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 import warnings
@@ -11,6 +13,7 @@ from scripts.prepare_qalb_manifests import (
     PUBLIC_RECORD_KEYS,
     build_manifest_data,
     validate_archive_members,
+    write_manifests,
 )
 
 
@@ -103,6 +106,119 @@ class QalbManifestTests(unittest.TestCase):
         self.assertTrue(
             all(not row["eligible_for_development"] for row in registry if row["split"] == "test")
         )
+
+    def test_writes_deterministic_text_free_manifests(self):
+        registry, metadata = build_manifest_data(self.archive, self.nahw)
+        output_dir = self.root / "processed" / "qalb"
+
+        first_summary = write_manifests(registry, metadata, output_dir)
+        first_files = {
+            path.name: path.read_bytes() for path in sorted(output_dir.iterdir())
+        }
+        second_summary = write_manifests(registry, metadata, output_dir)
+        second_files = {
+            path.name: path.read_bytes() for path in sorted(output_dir.iterdir())
+        }
+
+        expected_files = {
+            "qalb_registry.jsonl",
+            "qalb_train_selection.jsonl",
+            "qalb_dev_selection.jsonl",
+            "qalb_manifest_summary.json",
+        }
+        self.assertEqual(set(first_files), expected_files)
+        self.assertEqual(first_files, second_files)
+        self.assertEqual(first_summary, second_summary)
+        for payload in first_files.values():
+            self.assertNotIn(b"\r\n", payload)
+            for private_value in (
+                "TRAIN_KEEP",
+                "TRAIN_FIXED",
+                "QALB_TEST_MATCH",
+                "NAHW_MATCH",
+                str(self.root.resolve()),
+            ):
+                self.assertNotIn(private_value.encode("utf-8"), payload)
+
+        registry_rows = [
+            json.loads(line)
+            for line in first_files["qalb_registry.jsonl"].decode("utf-8").splitlines()
+        ]
+        self.assertEqual(len(registry_rows), 11)
+        self.assertTrue(all(set(row) == PUBLIC_RECORD_KEYS for row in registry_rows))
+        forbidden_keys = {
+            "source",
+            "correction",
+            "annotation",
+            "prompt",
+            "completion",
+            "passage",
+        }
+        self.assertTrue(all(forbidden_keys.isdisjoint(row) for row in registry_rows))
+
+        self.assertEqual(first_summary["counts"]["registry"], 11)
+        self.assertEqual(first_summary["counts"]["train_selected"], 4)
+        self.assertEqual(first_summary["counts"]["dev_selected"], 2)
+        for filename in (
+            "qalb_registry.jsonl",
+            "qalb_train_selection.jsonl",
+            "qalb_dev_selection.jsonl",
+        ):
+            self.assertEqual(
+                first_summary["output_sha256"][filename],
+                hashlib.sha256(first_files[filename]).hexdigest(),
+            )
+
+    def test_cli_accepts_explicit_private_paths(self):
+        output_dir = self.root / "cli-output"
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/prepare_qalb_manifests.py",
+                "--archive",
+                str(self.archive),
+                "--nahw-passage",
+                str(self.nahw),
+                "--output-dir",
+                str(output_dir),
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+
+        self.assertIn("Registry records: 11", result.stdout)
+        self.assertIn("Training selected: 4", result.stdout)
+        self.assertIn("Development selected: 2", result.stdout)
+
+    def test_cli_validation_failure_creates_no_output(self):
+        self.rebuild_with_groups(
+            GROUPS,
+            extra_members=[("../escape.txt", b"unsafe")],
+        )
+        output_dir = self.root / "failed-output"
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/prepare_qalb_manifests.py",
+                "--archive",
+                str(self.archive),
+                "--nahw-passage",
+                str(self.nahw),
+                "--output-dir",
+                str(output_dir),
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unsafe ZIP member path", result.stderr)
+        self.assertFalse(output_dir.exists())
 
     def test_rejects_parallel_record_count_mismatch(self):
         key = (2015, "L2", "dev")

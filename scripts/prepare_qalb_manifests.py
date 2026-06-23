@@ -3,16 +3,25 @@
 
 from __future__ import annotations
 
+import argparse
 from collections import Counter
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
+import tempfile
 import zipfile
 
 
 RELEASE = "0.9.1"
 ROOT_NAME = "QALB-0.9.1-Dec03-2021-SharedTasks"
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_ARCHIVE = (
+    ROOT / "data" / "raw" / "qalb" / "QALB-0.9.1-Dec03-2021-SharedTasks.zip"
+)
+DEFAULT_NAHW = ROOT / "data" / "raw" / "nahw" / "Nahw-Passage.json"
+DEFAULT_OUTPUT_DIR = ROOT / "data" / "processed" / "qalb"
 PUBLIC_RECORD_KEYS = {
     "record_key",
     "release",
@@ -290,3 +299,114 @@ def build_manifest_data(archive_path: Path, nahw_path: Path):
         "member_sha256": dict(sorted(member_hashes.items())),
     }
     return records, metadata
+
+
+def render_jsonl(rows) -> bytes:
+    return "".join(
+        json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + "\n"
+        for row in rows
+    ).encode("utf-8")
+
+
+def atomic_write(path: Path, payload: bytes) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", dir=path.parent
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_name, path)
+    except BaseException:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def write_manifests(registry, metadata, output_dir: Path):
+    output_dir = Path(output_dir)
+    train_rows = [row for row in registry if row["eligible_for_training"]]
+    dev_rows = [row for row in registry if row["eligible_for_development"]]
+    payloads = {
+        "qalb_registry.jsonl": render_jsonl(registry),
+        "qalb_train_selection.jsonl": render_jsonl(train_rows),
+        "qalb_dev_selection.jsonl": render_jsonl(dev_rows),
+    }
+    summary = {
+        "schema_version": 1,
+        "release": RELEASE,
+        "inputs": metadata,
+        "counts": {
+            "registry": len(registry),
+            "train_selected": len(train_rows),
+            "dev_selected": len(dev_rows),
+            "test_records": sum(row["split"] == "test" for row in registry),
+            "within_split_duplicate_records_flagged": sum(
+                row["duplicate_source_within_split"] for row in registry
+            ),
+            "train_dev_qalb_test_overlap_excluded": sum(
+                row["split"] in {"train", "dev"}
+                and row["exact_source_overlap_with_qalb_test"]
+                for row in registry
+            ),
+            "train_dev_nahw_overlap_excluded": sum(
+                row["split"] in {"train", "dev"}
+                and row["exact_source_overlap_with_nahw"]
+                for row in registry
+            ),
+        },
+        "selection_policy": {
+            "preserve_within_split_duplicates": True,
+            "exclude_exact_qalb_test_overlap": True,
+            "exclude_exact_nahw_overlap": True,
+            "normalization": (
+                "none; exact UTF-8 strings after file-format prefix removal"
+            ),
+            "qalb_test_role": "evaluation-only",
+        },
+        "output_sha256": {
+            name: sha256_bytes(payload) for name, payload in sorted(payloads.items())
+        },
+    }
+    summary_payload = (
+        json.dumps(summary, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+    ).encode("utf-8")
+    for name, payload in payloads.items():
+        atomic_write(output_dir / name, payload)
+    atomic_write(output_dir / "qalb_manifest_summary.json", summary_payload)
+    return summary
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--archive", type=Path, default=DEFAULT_ARCHIVE)
+    parser.add_argument("--nahw-passage", type=Path, default=DEFAULT_NAHW)
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    try:
+        registry, metadata = build_manifest_data(args.archive, args.nahw_passage)
+        summary = write_manifests(registry, metadata, args.output_dir)
+    except (ManifestError, zipfile.BadZipFile, OSError) as error:
+        raise SystemExit(f"ERROR: {error}") from error
+    print(f"Registry records: {summary['counts']['registry']}")
+    print(f"Training selected: {summary['counts']['train_selected']}")
+    print(f"Development selected: {summary['counts']['dev_selected']}")
+    print(f"Private outputs: {args.output_dir}")
+    print(
+        "IMPORTANT: QALB test records are evaluation-only; never commit generated "
+        "manifests or corpus data."
+    )
+
+
+if __name__ == "__main__":
+    main()
