@@ -3,9 +3,15 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import warnings
 import zipfile
 
-from scripts.prepare_qalb_manifests import PUBLIC_RECORD_KEYS, build_manifest_data
+from scripts.prepare_qalb_manifests import (
+    ManifestError,
+    PUBLIC_RECORD_KEYS,
+    build_manifest_data,
+    validate_archive_members,
+)
 
 
 ROOT_NAME = "QALB-0.9.1-Dec03-2021-SharedTasks"
@@ -107,8 +113,11 @@ class QalbManifestTests(unittest.TestCase):
             extra_members=[(f"{stem}.cor", cor + b"S EXTRA\n")],
         )
 
-        with self.assertRaisesRegex(ValueError, "Parallel record count mismatch"):
+        with self.assertRaisesRegex(
+            ManifestError, "Parallel record count mismatch"
+        ) as caught:
             build_manifest_data(self.archive, self.nahw)
+        self.assertIn("sent=1, cor=2, m2=1", str(caught.exception))
 
     def test_rejects_duplicate_document_ids_within_split(self):
         groups = dict(GROUPS)
@@ -118,7 +127,7 @@ class QalbManifestTests(unittest.TestCase):
         ]
         self.rebuild_with_groups(groups)
 
-        with self.assertRaisesRegex(ValueError, "Duplicate document ID"):
+        with self.assertRaisesRegex(ManifestError, "Duplicate document ID"):
             build_manifest_data(self.archive, self.nahw)
 
     def test_rejects_m2_source_order_mismatch(self):
@@ -132,8 +141,11 @@ class QalbManifestTests(unittest.TestCase):
             ],
         )
 
-        with self.assertRaisesRegex(ValueError, "source order mismatch"):
+        with self.assertRaisesRegex(
+            ManifestError, "source order mismatch"
+        ) as caught:
             build_manifest_data(self.archive, self.nahw)
+        self.assertIn("line 1", str(caught.exception))
 
     def test_reports_invalid_utf8_archive_member(self):
         stem = member_stem(2015, "L2", "train")
@@ -142,7 +154,9 @@ class QalbManifestTests(unittest.TestCase):
             extra_members=[(f"{stem}.sent", b"\xff")],
         )
 
-        with self.assertRaisesRegex(ValueError, r"not valid UTF-8: .*L2-Train\.sent"):
+        with self.assertRaisesRegex(
+            ManifestError, r"not valid UTF-8: .*L2-Train\.sent"
+        ):
             build_manifest_data(self.archive, self.nahw)
 
     def test_rejects_unsafe_zip_member_path(self):
@@ -151,8 +165,31 @@ class QalbManifestTests(unittest.TestCase):
             extra_members=[("../escape.txt", b"unused")],
         )
 
-        with self.assertRaisesRegex(ValueError, "Unsafe ZIP member path"):
+        with self.assertRaisesRegex(ManifestError, "Unsafe ZIP member path"):
             build_manifest_data(self.archive, self.nahw)
+
+    def test_rejects_duplicate_zip_member_name(self):
+        member = f"{ROOT_NAME}/README.txt"
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with zipfile.ZipFile(self.archive, "a") as archive:
+                archive.writestr(member, b"duplicate readme")
+
+        with self.assertRaisesRegex(
+            ManifestError, rf"Duplicate ZIP member name: {member}"
+        ):
+            build_manifest_data(self.archive, self.nahw)
+
+    def test_rejects_encrypted_zip_member(self):
+        info = zipfile.ZipInfo("encrypted.txt")
+        info.flag_bits |= 0x1
+
+        class Archive:
+            def infolist(self):
+                return [info]
+
+        with self.assertRaisesRegex(ManifestError, "Encrypted ZIP member"):
+            validate_archive_members(Archive())
 
 
 if __name__ == "__main__":

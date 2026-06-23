@@ -88,8 +88,12 @@ def decode_member(payload: bytes, member: str) -> str:
 
 
 def validate_archive_members(archive: zipfile.ZipFile) -> None:
+    seen = set()
     for info in archive.infolist():
         member = info.filename
+        if member in seen:
+            raise ManifestError(f"Duplicate ZIP member name: {member}")
+        seen.add(member)
         if (
             member.startswith("/")
             or "\\" in member
@@ -191,12 +195,26 @@ def build_manifest_data(archive_path: Path, nahw_path: Path):
                 decode_member(payloads["m2"], members["m2"])
             )
             if len({len(sent_rows), len(corrections), len(m2_sources)}) != 1:
-                raise ManifestError(f"Parallel record count mismatch: {spec.stem}")
+                raise ManifestError(
+                    f"Parallel record count mismatch: {spec.stem} "
+                    f"(sent={len(sent_rows)}, cor={len(corrections)}, "
+                    f"m2={len(m2_sources)})"
+                )
             document_ids = [document_id for document_id, _ in sent_rows]
             if len(document_ids) != len(set(document_ids)):
                 raise ManifestError(f"Duplicate document ID: {spec.stem}")
-            if [source for _, source in sent_rows] != m2_sources:
-                raise ManifestError(f"M2 source order mismatch: {spec.stem}")
+            sources = [source for _, source in sent_rows]
+            if sources != m2_sources:
+                mismatch_line = next(
+                    line_number
+                    for line_number, (source, m2_source) in enumerate(
+                        zip(sources, m2_sources), 1
+                    )
+                    if source != m2_source
+                )
+                raise ManifestError(
+                    f"M2 source order mismatch: {spec.stem} at line {mismatch_line}"
+                )
             for line_number, ((document_id, source), correction) in enumerate(
                 zip(sent_rows, corrections), 1
             ):
