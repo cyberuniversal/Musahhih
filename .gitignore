@@ -25,5 +25,6 @@ data/processed/
 # Editors and OS
 .vscode/
 .idea/
+.worktrees/
 .DS_Store
 Thumbs.db
