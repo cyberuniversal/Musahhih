@@ -43,8 +43,7 @@ One source string occurs in both QALB-2015 L2 train and test under different doc
 
 - source UTF-8 SHA-256: `32f52ef800b5292b2b3df1e0dfe6ba5b6254d25a32dbad12909dcd8e1f144e5b`
 - source length: 34 Unicode code points
-- train ID: `S941_T1_M_Pre_NNAS_S_C_002.ar`
-- test ID: `S257_T2_M_Pre_NNAS_W_C_002.ar`
+Original document identifiers are intentionally omitted from public documentation; the private selection manifest locates the excluded record.
 
 The official raw files must remain unchanged. Before any training run, a private selection manifest must exclude the train-side record at load time and record that decision. All QALB test splits remain strictly evaluation-only.
 
