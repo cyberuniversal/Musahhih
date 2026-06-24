@@ -11,7 +11,6 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
-import tempfile
 import zipfile
 
 
@@ -32,8 +31,9 @@ SUMMARY_OUTPUT_FILENAME = "qalb_manifest_summary.json"
 EXPECTED_OUTPUT_FILENAMES = frozenset(
     (*JSONL_OUTPUT_FILENAMES, SUMMARY_OUTPUT_FILENAME)
 )
-OUTPUT_TEMP_PREFIXES = tuple(
-    f".{filename}." for filename in sorted(EXPECTED_OUTPUT_FILENAMES)
+RESERVED_TEMP_DIRNAME = ".qalb_manifest_tmp"
+EXPECTED_TEMP_FILENAMES = frozenset(
+    f"{filename}.tmp" for filename in EXPECTED_OUTPUT_FILENAMES
 )
 PUBLIC_RECORD_KEYS = {
     "record_key",
@@ -175,6 +175,10 @@ def invalid_row(index: int, field: str) -> ManifestError:
     return ManifestError(f"Invalid registry row {index} field {field}")
 
 
+def invalid_group(spec: SplitSpec, index: int) -> ManifestError:
+    return ManifestError(f"Invalid registry group {split_key(spec)} at row {index}")
+
+
 def validate_manifest_inputs(registry, metadata) -> None:
     if not isinstance(registry, list) or any(
         not isinstance(row, dict) or set(row) != PUBLIC_RECORD_KEYS for row in registry
@@ -281,11 +285,28 @@ def validate_manifest_inputs(registry, metadata) -> None:
         ):
             raise invalid_row(index, "source_equals_correction")
 
-    observed_counts = Counter(
+    observed_counter = Counter(
         f"{row['year']}:{row['track']}:{row['split']}" for row in registry
     )
-    if dict(sorted(observed_counts.items())) != split_counts:
+    observed_counts = {
+        split_key(spec): observed_counter[split_key(spec)] for spec in SPLITS
+    }
+    if observed_counts != split_counts:
         raise invalid_metadata("split_counts")
+    row_index = 0
+    for spec in SPLITS:
+        document_ids = set()
+        for expected_line_number in range(1, split_counts[split_key(spec)] + 1):
+            row = registry[row_index]
+            if (
+                (row["year"], row["track"], row["split"])
+                != (spec.year, spec.track, spec.split)
+                or row["line_number"] != expected_line_number
+                or row["document_id"] in document_ids
+            ):
+                raise invalid_group(spec, row_index)
+            document_ids.add(row["document_id"])
+            row_index += 1
     within_counts = Counter(
         (row["year"], row["track"], row["split"], row["source_sha256"])
         for row in registry
@@ -559,35 +580,55 @@ def render_jsonl(rows) -> bytes:
     ).encode("utf-8")
 
 
-def atomic_write(path: Path, payload: bytes) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", dir=path.parent
-    )
+def atomic_write(output_dir: Path, name: str, payload: bytes) -> None:
+    if name not in EXPECTED_OUTPUT_FILENAMES:
+        raise ManifestError("Invalid manifest output filename")
+    output_dir = Path(output_dir)
+    temporary_path = output_dir / RESERVED_TEMP_DIRNAME / f"{name}.tmp"
     try:
-        with os.fdopen(descriptor, "wb") as stream:
+        with temporary_path.open("xb") as stream:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary_name, path)
+        os.replace(temporary_path, output_dir / name)
     except BaseException:
         try:
-            os.unlink(temporary_name)
+            temporary_path.unlink()
         except FileNotFoundError:
             pass
         raise
 
 
-def remove_generator_orphan_temps(output_dir: Path) -> None:
-    for entry in output_dir.iterdir():
-        if not any(
-            entry.name.startswith(prefix) and len(entry.name) > len(prefix)
-            for prefix in OUTPUT_TEMP_PREFIXES
-        ):
-            continue
-        if entry.is_symlink() or entry.is_file():
-            entry.unlink()
+def recover_reserved_temp_directory(output_dir: Path) -> None:
+    entries = list(output_dir.iterdir())
+    allowed_root_names = EXPECTED_OUTPUT_FILENAMES | {RESERVED_TEMP_DIRNAME}
+    if any(
+        entry.name not in allowed_root_names
+        or (
+            entry.name in EXPECTED_OUTPUT_FILENAMES
+            and not entry.is_symlink()
+            and not entry.is_file()
+        )
+        for entry in entries
+    ):
+        raise ManifestError("Output directory contains unexpected output entries")
+
+    reserved_path = output_dir / RESERVED_TEMP_DIRNAME
+    if not reserved_path.exists() and not reserved_path.is_symlink():
+        return
+    if reserved_path.is_symlink() or not reserved_path.is_dir():
+        raise ManifestError("Invalid reserved temporary directory")
+
+    children = list(reserved_path.iterdir())
+    if any(
+        child.name not in EXPECTED_TEMP_FILENAMES
+        or (not child.is_symlink() and not child.is_file())
+        for child in children
+    ):
+        raise ManifestError("Invalid reserved temporary directory contents")
+    for child in children:
+        child.unlink()
+    reserved_path.rmdir()
 
 
 def write_manifests(registry, metadata, output_dir: Path):
@@ -640,19 +681,23 @@ def write_manifests(registry, metadata, output_dir: Path):
         json.dumps(summary, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
     ).encode("utf-8")
     output_dir.mkdir(parents=True, exist_ok=True)
-    remove_generator_orphan_temps(output_dir)
-    existing_names = {path.name for path in output_dir.iterdir()}
-    if not existing_names <= EXPECTED_OUTPUT_FILENAMES:
-        raise ManifestError("Output directory contains unexpected output entries")
+    recover_reserved_temp_directory(output_dir)
+    temporary_dir = output_dir / RESERVED_TEMP_DIRNAME
+    temporary_dir.mkdir()
     summary_path = output_dir / SUMMARY_OUTPUT_FILENAME
     summary_path.unlink(missing_ok=True)
     try:
         for name, payload in payloads.items():
-            atomic_write(output_dir / name, payload)
-        atomic_write(summary_path, summary_payload)
+            atomic_write(output_dir, name, payload)
+        atomic_write(output_dir, SUMMARY_OUTPUT_FILENAME, summary_payload)
     except BaseException:
         summary_path.unlink(missing_ok=True)
+        try:
+            temporary_dir.rmdir()
+        except OSError:
+            pass
         raise
+    temporary_dir.rmdir()
     return summary
 
 

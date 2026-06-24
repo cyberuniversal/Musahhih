@@ -109,6 +109,12 @@ class QalbManifestTests(unittest.TestCase):
         self.assertFalse(output_dir.exists())
         self.assertNotIn(str(value), str(caught.exception))
 
+    def recompute_record_key(self, row):
+        row["record_key"] = (
+            f"qalb-{row['release']}:{row['year']}:{row['track']}:"
+            f"{row['split']}:{row['line_number']:06d}:{row['document_id']}"
+        )
+
     def test_rejects_aligned_archive_with_noncanonical_split_count_by_default(self):
         with self.assertRaisesRegex(
             ManifestError,
@@ -334,6 +340,46 @@ class QalbManifestTests(unittest.TestCase):
                     field, value, row_index=row_index
                 )
 
+    def test_writer_rejects_duplicate_document_id_with_recomputed_key(self):
+        registry, metadata = self.build_fixture_manifest()
+        tampered = [dict(row) for row in registry]
+        tampered[1]["document_id"] = tampered[0]["document_id"]
+        self.recompute_record_key(tampered[1])
+
+        with self.assertRaisesRegex(
+            ManifestError, r"registry group 2014:L1:train at row 1$"
+        ) as caught:
+            write_manifests(tampered, metadata, self.root / "duplicate-document")
+
+        self.assertNotIn(tampered[0]["document_id"], str(caught.exception))
+
+    def test_writer_rejects_noncontiguous_lines_with_recomputed_keys(self):
+        registry, metadata = self.build_fixture_manifest()
+        for case_name, line_number in (("duplicate", 1), ("skipped", 3)):
+            with self.subTest(case_name=case_name):
+                tampered = [dict(row) for row in registry]
+                tampered[1]["line_number"] = line_number
+                self.recompute_record_key(tampered[1])
+
+                with self.assertRaisesRegex(
+                    ManifestError, r"registry group 2014:L1:train at row 1$"
+                ):
+                    write_manifests(
+                        tampered,
+                        metadata,
+                        self.root / f"noncontiguous-{case_name}",
+                    )
+
+    def test_writer_rejects_out_of_order_or_reappearing_split_group(self):
+        registry, metadata = self.build_fixture_manifest()
+        tampered = [dict(row) for row in registry]
+        tampered[3], tampered[4] = tampered[4], tampered[3]
+
+        with self.assertRaisesRegex(
+            ManifestError, r"registry group 2014:L1:train at row 3$"
+        ):
+            write_manifests(tampered, metadata, self.root / "out-of-order")
+
     def test_writer_rejects_malformed_hashes_and_field_types(self):
         cases = (
             ("source_sha256", "A" * 64),
@@ -387,10 +433,10 @@ class QalbManifestTests(unittest.TestCase):
         }
         original_atomic_write = manifest_module.atomic_write
 
-        def fail_during_jsonl_replacement(path, payload):
-            if Path(path).name == "qalb_train_selection.jsonl":
+        def fail_during_jsonl_replacement(output_dir, name, payload):
+            if name == "qalb_train_selection.jsonl":
                 raise OSError("injected JSONL replacement failure")
-            original_atomic_write(path, payload)
+            original_atomic_write(output_dir, name, payload)
 
         with mock.patch.object(
             manifest_module,
@@ -407,14 +453,16 @@ class QalbManifestTests(unittest.TestCase):
         }
         self.assertEqual(recovered_files, valid_files)
 
-    def test_rerun_removes_generator_owned_orphan_temp_file(self):
+    def test_rerun_removes_reserved_generator_orphan_temp_file(self):
         registry, metadata = self.build_fixture_manifest()
         output_dir = self.root / "orphan-temp-output"
         write_manifests(registry, metadata, output_dir)
         valid_files = {
             path.name: path.read_bytes() for path in sorted(output_dir.iterdir())
         }
-        orphan = output_dir / ".qalb_registry.jsonl.crash-orphan"
+        reserved_dir = output_dir / ".qalb_manifest_tmp"
+        reserved_dir.mkdir()
+        orphan = reserved_dir / "qalb_registry.jsonl.tmp"
         orphan.write_bytes(b"PRIVATE_ORPHAN_BYTES")
 
         summary = write_manifests(registry, metadata, output_dir)
@@ -426,17 +474,72 @@ class QalbManifestTests(unittest.TestCase):
         self.assertEqual(recovered_files, valid_files)
         self.assertEqual(summary["counts"]["registry"], len(registry))
 
-    def test_rejects_generator_shaped_orphan_directory(self):
+    def test_rejects_and_preserves_unexpected_reserved_temp_child(self):
         registry, metadata = self.build_fixture_manifest()
         output_dir = self.root / "orphan-directory-output"
         write_manifests(registry, metadata, output_dir)
-        orphan_directory = output_dir / ".qalb_registry.jsonl.crash-orphan"
-        orphan_directory.mkdir()
+        reserved_dir = output_dir / ".qalb_manifest_tmp"
+        reserved_dir.mkdir()
+        unexpected = reserved_dir / "unexpected.backup"
+        unexpected.write_bytes(b"PRESERVE_ME")
+
+        with self.assertRaisesRegex(ManifestError, "reserved temporary directory"):
+            write_manifests(registry, metadata, output_dir)
+
+        self.assertEqual(unexpected.read_bytes(), b"PRESERVE_ME")
+
+    def test_rejects_and_preserves_similar_root_backup_file(self):
+        registry, metadata = self.build_fixture_manifest()
+        output_dir = self.root / "root-backup-output"
+        write_manifests(registry, metadata, output_dir)
+        backup = output_dir / ".qalb_registry.jsonl.backup"
+        backup.write_bytes(b"PRESERVE_ROOT_BACKUP")
 
         with self.assertRaisesRegex(ManifestError, "unexpected output"):
             write_manifests(registry, metadata, output_dir)
 
-        self.assertTrue(orphan_directory.is_dir())
+        self.assertEqual(backup.read_bytes(), b"PRESERVE_ROOT_BACKUP")
+
+    def test_rejects_reserved_temp_path_when_it_is_not_a_directory(self):
+        registry, metadata = self.build_fixture_manifest()
+        output_dir = self.root / "reserved-file-output"
+        write_manifests(registry, metadata, output_dir)
+        reserved_path = output_dir / ".qalb_manifest_tmp"
+        reserved_path.write_bytes(b"PRESERVE_RESERVED_FILE")
+
+        with self.assertRaisesRegex(ManifestError, "reserved temporary directory"):
+            write_manifests(registry, metadata, output_dir)
+
+        self.assertEqual(reserved_path.read_bytes(), b"PRESERVE_RESERVED_FILE")
+
+    def test_atomic_writes_use_exact_reserved_temp_filenames(self):
+        registry, metadata = self.build_fixture_manifest()
+        output_dir = self.root / "exact-temp-output"
+        replacements = []
+        original_replace = manifest_module.os.replace
+
+        def record_replace(source, destination):
+            replacements.append((Path(source), Path(destination)))
+            original_replace(source, destination)
+
+        with mock.patch.object(
+            manifest_module.os, "replace", side_effect=record_replace
+        ):
+            write_manifests(registry, metadata, output_dir)
+
+        self.assertEqual(
+            {source.name for source, _ in replacements},
+            {f"{name}.tmp" for name in manifest_module.EXPECTED_OUTPUT_FILENAMES},
+        )
+        self.assertTrue(
+            all(
+                source.parent == output_dir / ".qalb_manifest_tmp"
+                and destination.parent == output_dir
+                and source.name == f"{destination.name}.tmp"
+                for source, destination in replacements
+            )
+        )
+        self.assertFalse((output_dir / ".qalb_manifest_tmp").exists())
 
     def test_rejects_unrelated_stale_file_without_invalidating_summary(self):
         registry, metadata = self.build_fixture_manifest()
