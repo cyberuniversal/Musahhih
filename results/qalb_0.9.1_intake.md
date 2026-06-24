@@ -59,7 +59,7 @@ The private selection manifests were generated with:
 python scripts/prepare_qalb_manifests.py
 ```
 
-- Generator commit: `8ec8d2aab37d364685b0a066c73e9c0ff5111a02`
+- Generator commit: `303bd4774d7a4fbcf7c346c253b6429255c58fff`
 - QALB input SHA-256: `c14764b01439618bdcebda04bd5b9365cd70a1fbc58607f1bd18cf357514e503`
 - Nahw input SHA-256: `97d4f5e0b75ff5848ffdff113a74676c0de607d0bb877e1f26c1bde1585a2208`
 - Registry records: 22,938
@@ -76,6 +76,6 @@ The generator reads the unchanged QALB ZIP directly. Exact overlap comparisons a
 | `qalb_registry.jsonl` | `e0a87eb3b6bdf9d0dca4edd29e4a4ab72b8c6a49d2e29f83aaab496147939691` |
 | `qalb_train_selection.jsonl` | `9c9a054120d884a26d1b700501020452211df7b24de7e64476615d4a85d5dca2` |
 | `qalb_dev_selection.jsonl` | `563b12a75789ce0865ab341614935d855ab42086fae6e0cdaa26ba17f4de26c8` |
-| `qalb_manifest_summary.json` | `ee413cb049284a7115ee6c75e654ce9f7151207bc2aa3553a245e24d25931155` |
+| `qalb_manifest_summary.json` | `e322424d4b1e0265c8c3011a243f7aba38609c35e3905b4aedf0b0ef75e3ea33` |
 
 Validation passed for a deterministic rerun and for the output schema/privacy checks. Every generated file is a corpus-text-free metadata/hash artifact under an ignored, private path; none is tracked. This manifest-only run performed no model training and no QALB benchmark evaluation.

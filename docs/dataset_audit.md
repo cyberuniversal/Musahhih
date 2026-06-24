@@ -42,7 +42,7 @@ Exact-source checks found no overlap between any QALB source document and the 10
 
 ### Private selection manifests
 
-The verified manifest run used `python scripts/prepare_qalb_manifests.py` from generator commit `8ec8d2aab37d364685b0a066c73e9c0ff5111a02`. The generator read the unchanged QALB ZIP directly and compared exact source strings without normalization; file-format prefixes were removed before the exact UTF-8 comparisons.
+The verified manifest run used `python scripts/prepare_qalb_manifests.py` from generator commit `303bd4774d7a4fbcf7c346c253b6429255c58fff`. The generator read the unchanged QALB ZIP directly and compared exact source strings without normalization; file-format prefixes were removed before the exact UTF-8 comparisons.
 
 | Input | SHA-256 |
 |---|---|
@@ -54,7 +54,7 @@ The verified manifest run used `python scripts/prepare_qalb_manifests.py` from g
 | `qalb_registry.jsonl` | `e0a87eb3b6bdf9d0dca4edd29e4a4ab72b8c6a49d2e29f83aaab496147939691` |
 | `qalb_train_selection.jsonl` | `9c9a054120d884a26d1b700501020452211df7b24de7e64476615d4a85d5dca2` |
 | `qalb_dev_selection.jsonl` | `563b12a75789ce0865ab341614935d855ab42086fae6e0cdaa26ba17f4de26c8` |
-| `qalb_manifest_summary.json` | `ee413cb049284a7115ee6c75e654ce9f7151207bc2aa3553a245e24d25931155` |
+| `qalb_manifest_summary.json` | `e322424d4b1e0265c8c3011a243f7aba38609c35e3905b4aedf0b0ef75e3ea33` |
 
 The registry contains 22,938 records. The selection contains 19,720 training records and 1,171 development records, while all 2,046 official test records remain evaluation-only. One train/dev record with exact QALB-test source overlap was excluded; no train/dev record was excluded for exact Nahw overlap.
 
