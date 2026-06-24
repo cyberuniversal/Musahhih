@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -37,6 +38,10 @@ GROUPS = {
     (2015, "L2", "dev"): [("l2d.ar", "L2_DEV_KEEP", "L2_DEV_FIXED")],
     (2015, "L2", "test"): [("l2q.ar", "L2_TEST_ONLY", "L2_TEST_FIXED")],
 }
+
+
+def expected_counts(groups):
+    return {key: len(rows) for key, rows in groups.items()}
 
 
 def member_stem(year, track, split):
@@ -83,8 +88,87 @@ class QalbManifestTests(unittest.TestCase):
         self.archive.unlink()
         write_fixture_archive(self.archive, groups, extra_members)
 
+    def build_fixture_manifest(self, groups=GROUPS):
+        return build_manifest_data(
+            self.archive,
+            self.nahw,
+            expected_split_counts=expected_counts(groups),
+        )
+
+    def assert_rejected_row_tamper(self, field, value, *, row_index=0):
+        registry, metadata = self.build_fixture_manifest()
+        tampered = [dict(row) for row in registry]
+        tampered[row_index][field] = value
+        output_dir = self.root / f"invalid-{field}"
+
+        with self.assertRaisesRegex(
+            ManifestError, rf"registry row {row_index} field {field}"
+        ) as caught:
+            write_manifests(tampered, metadata, output_dir)
+
+        self.assertFalse(output_dir.exists())
+        self.assertNotIn(str(value), str(caught.exception))
+
+    def test_rejects_aligned_archive_with_noncanonical_split_count_by_default(self):
+        with self.assertRaisesRegex(
+            ManifestError,
+            r"Split count mismatch: 2014:L1:train observed=4 expected=19411$",
+        ) as caught:
+            build_manifest_data(self.archive, self.nahw)
+
+        message = str(caught.exception)
+        self.assertNotIn("t1.ar", message)
+        self.assertNotIn(str(self.archive.resolve()), message)
+
+    def test_records_deterministic_observed_split_counts_in_metadata(self):
+        _, metadata = self.build_fixture_manifest()
+
+        expected = {
+            "2014:L1:dev": 2,
+            "2014:L1:test": 1,
+            "2014:L1:train": 4,
+            "2015:L1:test": 1,
+            "2015:L2:dev": 1,
+            "2015:L2:test": 1,
+            "2015:L2:train": 1,
+        }
+        self.assertEqual(metadata["split_counts"], expected)
+        self.assertEqual(
+            set(metadata),
+            {
+                "archive_sha256",
+                "archive_filename",
+                "nahw_sha256",
+                "nahw_filename",
+                "member_sha256",
+                "split_counts",
+                "nahw_passage_source_sha256",
+            },
+        )
+
+    def test_hashes_the_same_input_bytes_used_for_parsing(self):
+        expected_archive_hash = hashlib.sha256(self.archive.read_bytes()).hexdigest()
+        expected_nahw_hash = hashlib.sha256(self.nahw.read_bytes()).hexdigest()
+        open_counts = {self.archive.resolve(): 0, self.nahw.resolve(): 0}
+        original_open = io.open
+
+        def counting_open(file, *args, **kwargs):
+            if not isinstance(file, int):
+                resolved = Path(file).resolve()
+                if resolved in open_counts:
+                    open_counts[resolved] += 1
+            return original_open(file, *args, **kwargs)
+
+        with mock.patch("io.open", side_effect=counting_open):
+            _, metadata = self.build_fixture_manifest()
+
+        self.assertEqual(metadata["archive_sha256"], expected_archive_hash)
+        self.assertEqual(metadata["nahw_sha256"], expected_nahw_hash)
+        self.assertEqual(open_counts[self.archive.resolve()], 1)
+        self.assertEqual(open_counts[self.nahw.resolve()], 1)
+
     def test_preserves_within_train_duplicates_and_applies_leakage_policy(self):
-        registry, metadata = build_manifest_data(self.archive, self.nahw)
+        registry, metadata = self.build_fixture_manifest()
 
         self.assertEqual(len(registry), 11)
         self.assertTrue(all(set(row) == PUBLIC_RECORD_KEYS for row in registry))
@@ -110,7 +194,7 @@ class QalbManifestTests(unittest.TestCase):
         )
 
     def test_writes_deterministic_text_free_manifests(self):
-        registry, metadata = build_manifest_data(self.archive, self.nahw)
+        registry, metadata = self.build_fixture_manifest()
         output_dir = self.root / "processed" / "qalb"
 
         first_summary = write_manifests(registry, metadata, output_dir)
@@ -173,7 +257,7 @@ class QalbManifestTests(unittest.TestCase):
             )
 
     def test_rejects_private_registry_fields_before_creating_output(self):
-        registry, metadata = build_manifest_data(self.archive, self.nahw)
+        registry, metadata = self.build_fixture_manifest()
         private_sentinel = "PRIVATE_SOURCE_SENTINEL"
         invalid_registry = [dict(row) for row in registry]
         invalid_registry[0]["source"] = private_sentinel
@@ -186,7 +270,7 @@ class QalbManifestTests(unittest.TestCase):
         self.assertNotIn(private_sentinel, str(caught.exception))
 
     def test_rejects_invalid_metadata_before_creating_output(self):
-        registry, metadata = build_manifest_data(self.archive, self.nahw)
+        registry, metadata = self.build_fixture_manifest()
         absolute_path = str(self.archive.resolve())
         cases = {
             "unexpected_absolute_path_field": {
@@ -211,8 +295,91 @@ class QalbManifestTests(unittest.TestCase):
                 self.assertFalse(output_dir.exists())
                 self.assertNotIn(absolute_path, str(caught.exception))
 
+    def test_writer_rejects_absolute_or_tampered_member_paths(self):
+        cases = {
+            "absolute": str(self.archive.resolve()),
+            "wrong_split": member_stem(2014, "L1", "dev") + ".sent",
+        }
+
+        for case_name, value in cases.items():
+            with self.subTest(case_name=case_name):
+                self.assert_rejected_row_tamper("sent_member", value)
+
+    def test_writer_rejects_official_test_row_marked_training_eligible(self):
+        registry, _ = self.build_fixture_manifest()
+        test_index = next(
+            index for index, row in enumerate(registry) if row["split"] == "test"
+        )
+
+        self.assert_rejected_row_tamper(
+            "eligible_for_training", True, row_index=test_index
+        )
+
+    def test_writer_rejects_inconsistent_derived_registry_fields(self):
+        registry, _ = self.build_fixture_manifest()
+        duplicate_index = next(
+            index
+            for index, row in enumerate(registry)
+            if row["duplicate_source_within_split"]
+        )
+        cases = (
+            ("record_key", "TAMPERED_RECORD_KEY", 0),
+            ("selection_reason", ["TAMPERED_REASON"], 0),
+            ("duplicate_source_within_split", False, duplicate_index),
+        )
+
+        for field, value, row_index in cases:
+            with self.subTest(field=field):
+                self.assert_rejected_row_tamper(
+                    field, value, row_index=row_index
+                )
+
+    def test_writer_rejects_malformed_hashes_and_field_types(self):
+        cases = (
+            ("source_sha256", "A" * 64),
+            ("correction_sha256", "not-a-hash"),
+            ("line_number", "1"),
+            ("source_codepoints", -1),
+            ("exact_source_overlap_with_nahw", 1),
+            ("selection_reason", "official_train_split"),
+        )
+
+        for field, value in cases:
+            with self.subTest(field=field):
+                self.assert_rejected_row_tamper(field, value)
+
+    def test_writer_rejects_inconsistent_metadata_invariants(self):
+        registry, metadata = self.build_fixture_manifest()
+        cases = {}
+
+        missing_member = dict(metadata)
+        missing_member["member_sha256"] = dict(metadata["member_sha256"])
+        missing_member["member_sha256"].pop(next(iter(missing_member["member_sha256"])))
+        cases["member_sha256"] = missing_member
+
+        wrong_counts = dict(metadata)
+        wrong_counts["split_counts"] = dict(metadata["split_counts"])
+        wrong_counts["split_counts"]["2014:L1:train"] += 1
+        cases["split_counts"] = wrong_counts
+
+        unsorted_nahw = dict(metadata)
+        unsorted_nahw["nahw_passage_source_sha256"] = [
+            "f" * 64,
+            "0" * 64,
+        ]
+        cases["nahw_passage_source_sha256"] = unsorted_nahw
+
+        for field, invalid_metadata in cases.items():
+            with self.subTest(field=field):
+                output_dir = self.root / f"invalid-metadata-{field}"
+                with self.assertRaisesRegex(
+                    ManifestError, rf"metadata field {field}"
+                ):
+                    write_manifests(registry, invalid_metadata, output_dir)
+                self.assertFalse(output_dir.exists())
+
     def test_failed_jsonl_replacement_invalidates_and_can_recover_generation(self):
-        registry, metadata = build_manifest_data(self.archive, self.nahw)
+        registry, metadata = self.build_fixture_manifest()
         output_dir = self.root / "recoverable-output"
         write_manifests(registry, metadata, output_dir)
         valid_files = {
@@ -240,8 +407,39 @@ class QalbManifestTests(unittest.TestCase):
         }
         self.assertEqual(recovered_files, valid_files)
 
+    def test_rerun_removes_generator_owned_orphan_temp_file(self):
+        registry, metadata = self.build_fixture_manifest()
+        output_dir = self.root / "orphan-temp-output"
+        write_manifests(registry, metadata, output_dir)
+        valid_files = {
+            path.name: path.read_bytes() for path in sorted(output_dir.iterdir())
+        }
+        orphan = output_dir / ".qalb_registry.jsonl.crash-orphan"
+        orphan.write_bytes(b"PRIVATE_ORPHAN_BYTES")
+
+        summary = write_manifests(registry, metadata, output_dir)
+        recovered_files = {
+            path.name: path.read_bytes() for path in sorted(output_dir.iterdir())
+        }
+
+        self.assertFalse(orphan.exists())
+        self.assertEqual(recovered_files, valid_files)
+        self.assertEqual(summary["counts"]["registry"], len(registry))
+
+    def test_rejects_generator_shaped_orphan_directory(self):
+        registry, metadata = self.build_fixture_manifest()
+        output_dir = self.root / "orphan-directory-output"
+        write_manifests(registry, metadata, output_dir)
+        orphan_directory = output_dir / ".qalb_registry.jsonl.crash-orphan"
+        orphan_directory.mkdir()
+
+        with self.assertRaisesRegex(ManifestError, "unexpected output"):
+            write_manifests(registry, metadata, output_dir)
+
+        self.assertTrue(orphan_directory.is_dir())
+
     def test_rejects_unrelated_stale_file_without_invalidating_summary(self):
-        registry, metadata = build_manifest_data(self.archive, self.nahw)
+        registry, metadata = self.build_fixture_manifest()
         output_dir = self.root / "stale-output"
         write_manifests(registry, metadata, output_dir)
         summary_path = output_dir / "qalb_manifest_summary.json"
@@ -253,7 +451,7 @@ class QalbManifestTests(unittest.TestCase):
 
         self.assertEqual(summary_path.read_bytes(), original_summary)
 
-    def test_cli_accepts_explicit_private_paths(self):
+    def test_cli_enforces_canonical_counts_for_explicit_private_paths(self):
         output_dir = self.root / "cli-output"
 
         result = subprocess.run(
@@ -270,12 +468,14 @@ class QalbManifestTests(unittest.TestCase):
             cwd=Path(__file__).resolve().parents[1],
             text=True,
             capture_output=True,
-            check=True,
         )
 
-        self.assertIn("Registry records: 11", result.stdout)
-        self.assertIn("Training selected: 4", result.stdout)
-        self.assertIn("Development selected: 2", result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Split count mismatch: 2014:L1:train observed=4 expected=19411",
+            result.stderr,
+        )
+        self.assertFalse(output_dir.exists())
 
     def test_cli_validation_failure_creates_no_output(self):
         self.rebuild_with_groups(
@@ -316,7 +516,7 @@ class QalbManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(
             ManifestError, "Parallel record count mismatch"
         ) as caught:
-            build_manifest_data(self.archive, self.nahw)
+            self.build_fixture_manifest()
         self.assertIn("sent=1, cor=2, m2=1", str(caught.exception))
 
     def test_rejects_duplicate_document_ids_within_split(self):
@@ -328,7 +528,7 @@ class QalbManifestTests(unittest.TestCase):
         self.rebuild_with_groups(groups)
 
         with self.assertRaisesRegex(ManifestError, "Duplicate document ID"):
-            build_manifest_data(self.archive, self.nahw)
+            self.build_fixture_manifest(groups)
 
     def test_rejects_m2_source_order_mismatch(self):
         key = (2014, "L1", "dev")
@@ -344,7 +544,7 @@ class QalbManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(
             ManifestError, "source order mismatch"
         ) as caught:
-            build_manifest_data(self.archive, self.nahw)
+            self.build_fixture_manifest()
         self.assertIn("line 1", str(caught.exception))
 
     def test_reports_invalid_utf8_archive_member(self):
@@ -357,7 +557,7 @@ class QalbManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(
             ManifestError, r"not valid UTF-8: .*L2-Train\.sent"
         ):
-            build_manifest_data(self.archive, self.nahw)
+            self.build_fixture_manifest()
 
     def test_rejects_unsafe_zip_member_path(self):
         self.rebuild_with_groups(
@@ -366,7 +566,7 @@ class QalbManifestTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ManifestError, "Unsafe ZIP member path"):
-            build_manifest_data(self.archive, self.nahw)
+            self.build_fixture_manifest()
 
     def test_rejects_duplicate_zip_member_name(self):
         member = f"{ROOT_NAME}/README.txt"
@@ -378,7 +578,7 @@ class QalbManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(
             ManifestError, rf"Duplicate ZIP member name: {member}"
         ):
-            build_manifest_data(self.archive, self.nahw)
+            self.build_fixture_manifest()
 
     def test_rejects_encrypted_zip_member(self):
         info = zipfile.ZipInfo("encrypted.txt")

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 import json
@@ -30,6 +31,9 @@ JSONL_OUTPUT_FILENAMES = (
 SUMMARY_OUTPUT_FILENAME = "qalb_manifest_summary.json"
 EXPECTED_OUTPUT_FILENAMES = frozenset(
     (*JSONL_OUTPUT_FILENAMES, SUMMARY_OUTPUT_FILENAME)
+)
+OUTPUT_TEMP_PREFIXES = tuple(
+    f".{filename}." for filename in sorted(EXPECTED_OUTPUT_FILENAMES)
 )
 PUBLIC_RECORD_KEYS = {
     "record_key",
@@ -60,6 +64,8 @@ PUBLIC_METADATA_KEYS = {
     "nahw_sha256",
     "nahw_filename",
     "member_sha256",
+    "split_counts",
+    "nahw_passage_source_sha256",
 }
 
 
@@ -91,18 +97,34 @@ SPLITS = (
     SplitSpec(2015, "L2", "dev"),
     SplitSpec(2015, "L2", "test"),
 )
+CANONICAL_SPLIT_COUNTS = {
+    (2014, "L1", "train"): 19411,
+    (2014, "L1", "dev"): 1017,
+    (2014, "L1", "test"): 968,
+    (2015, "L1", "test"): 920,
+    (2015, "L2", "train"): 310,
+    (2015, "L2", "dev"): 154,
+    (2015, "L2", "test"): 158,
+}
+
+
+def split_key(spec: SplitSpec) -> str:
+    return f"{spec.year}:{spec.track}:{spec.split}"
 
 
 def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def sha256_path(path: Path) -> str:
-    digest = hashlib.sha256()
+@contextmanager
+def open_hashed_zip(path: Path):
     with path.open("rb") as stream:
+        digest = hashlib.sha256()
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
-    return digest.hexdigest()
+        stream.seek(0)
+        with zipfile.ZipFile(stream) as archive:
+            yield archive, digest.hexdigest()
 
 
 def decode_member(payload: bytes, member: str) -> str:
@@ -130,18 +152,6 @@ def validate_archive_members(archive: zipfile.ZipFile) -> None:
             raise ManifestError(f"Encrypted ZIP member is not supported: {member}")
 
 
-def is_safe_archive_member_name(member) -> bool:
-    if not isinstance(member, str) or not member:
-        return False
-    path = PurePosixPath(member)
-    return not (
-        member.startswith("/")
-        or "\\" in member
-        or ".." in path.parts
-        or (len(member) > 1 and member[1] == ":")
-    )
-
-
 def is_sha256(value) -> bool:
     return (
         isinstance(value, str)
@@ -150,10 +160,24 @@ def is_sha256(value) -> bool:
     )
 
 
+def required_member_names():
+    names = {f"{ROOT_NAME}/README.txt", f"{ROOT_NAME}/LICENSE.txt"}
+    for spec in SPLITS:
+        names.update(f"{spec.stem}.{suffix}" for suffix in ("sent", "cor", "m2"))
+    return names
+
+
+def invalid_metadata(field: str) -> ManifestError:
+    return ManifestError(f"Invalid manifest metadata field {field}")
+
+
+def invalid_row(index: int, field: str) -> ManifestError:
+    return ManifestError(f"Invalid registry row {index} field {field}")
+
+
 def validate_manifest_inputs(registry, metadata) -> None:
-    if any(
-        not isinstance(row, dict) or set(row) != PUBLIC_RECORD_KEYS
-        for row in registry
+    if not isinstance(registry, list) or any(
+        not isinstance(row, dict) or set(row) != PUBLIC_RECORD_KEYS for row in registry
     ):
         raise ManifestError("Invalid registry schema")
     if not isinstance(metadata, dict) or set(metadata) != PUBLIC_METADATA_KEYS:
@@ -161,7 +185,7 @@ def validate_manifest_inputs(registry, metadata) -> None:
     if not is_sha256(metadata["archive_sha256"]) or not is_sha256(
         metadata["nahw_sha256"]
     ):
-        raise ManifestError("Invalid manifest metadata hashes")
+        raise invalid_metadata("archive_sha256/nahw_sha256")
     for key in ("archive_filename", "nahw_filename"):
         filename = metadata[key]
         if (
@@ -172,13 +196,137 @@ def validate_manifest_inputs(registry, metadata) -> None:
             or filename in {".", ".."}
             or (len(filename) > 1 and filename[1] == ":")
         ):
-            raise ManifestError("Invalid manifest metadata filename")
+            raise invalid_metadata(key)
     member_hashes = metadata["member_sha256"]
-    if not isinstance(member_hashes, dict) or any(
-        not is_safe_archive_member_name(member) or not is_sha256(digest)
-        for member, digest in member_hashes.items()
+    if (
+        not isinstance(member_hashes, dict)
+        or set(member_hashes) != required_member_names()
+        or any(not is_sha256(digest) for digest in member_hashes.values())
     ):
-        raise ManifestError("Invalid manifest metadata member hashes")
+        raise invalid_metadata("member_sha256")
+
+    expected_split_keys = {split_key(spec) for spec in SPLITS}
+    split_counts = metadata["split_counts"]
+    if (
+        not isinstance(split_counts, dict)
+        or set(split_counts) != expected_split_keys
+        or any(
+            not isinstance(count, int) or isinstance(count, bool) or count < 0
+            for count in split_counts.values()
+        )
+    ):
+        raise invalid_metadata("split_counts")
+    nahw_hashes = metadata["nahw_passage_source_sha256"]
+    if (
+        not isinstance(nahw_hashes, list)
+        or any(not is_sha256(digest) for digest in nahw_hashes)
+        or nahw_hashes != sorted(set(nahw_hashes))
+    ):
+        raise invalid_metadata("nahw_passage_source_sha256")
+
+    bool_fields = (
+        "source_equals_correction",
+        "duplicate_source_within_split",
+        "exact_source_overlap_with_qalb_test",
+        "exact_source_overlap_with_nahw",
+        "eligible_for_training",
+        "eligible_for_development",
+    )
+    valid_specs = {(spec.year, spec.track, spec.split): spec for spec in SPLITS}
+    for index, row in enumerate(registry):
+        if row["release"] != RELEASE:
+            raise invalid_row(index, "release")
+        if not isinstance(row["year"], int) or isinstance(row["year"], bool):
+            raise invalid_row(index, "year")
+        if not isinstance(row["track"], str):
+            raise invalid_row(index, "track")
+        if not isinstance(row["split"], str):
+            raise invalid_row(index, "split")
+        spec = valid_specs.get((row["year"], row["track"], row["split"]))
+        if spec is None:
+            raise invalid_row(index, "split")
+        if not isinstance(row["line_number"], int) or isinstance(
+            row["line_number"], bool
+        ) or row["line_number"] <= 0:
+            raise invalid_row(index, "line_number")
+        if not isinstance(row["document_id"], str) or not row["document_id"]:
+            raise invalid_row(index, "document_id")
+        for field in ("source_codepoints", "correction_codepoints"):
+            value = row[field]
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise invalid_row(index, field)
+        for field in ("source_sha256", "correction_sha256"):
+            if not is_sha256(row[field]):
+                raise invalid_row(index, field)
+        for field in bool_fields:
+            if not isinstance(row[field], bool):
+                raise invalid_row(index, field)
+        reasons = row["selection_reason"]
+        if not isinstance(reasons, list) or any(
+            not isinstance(reason, str) for reason in reasons
+        ):
+            raise invalid_row(index, "selection_reason")
+        for suffix in ("sent", "cor", "m2"):
+            field = f"{suffix}_member"
+            if row[field] != f"{spec.stem}.{suffix}":
+                raise invalid_row(index, field)
+        expected_record_key = (
+            f"qalb-{RELEASE}:{spec.year}:{spec.track}:{spec.split}:"
+            f"{row['line_number']:06d}:{row['document_id']}"
+        )
+        if row["record_key"] != expected_record_key:
+            raise invalid_row(index, "record_key")
+        if row["source_equals_correction"] != (
+            row["source_sha256"] == row["correction_sha256"]
+        ):
+            raise invalid_row(index, "source_equals_correction")
+
+    observed_counts = Counter(
+        f"{row['year']}:{row['track']}:{row['split']}" for row in registry
+    )
+    if dict(sorted(observed_counts.items())) != split_counts:
+        raise invalid_metadata("split_counts")
+    within_counts = Counter(
+        (row["year"], row["track"], row["split"], row["source_sha256"])
+        for row in registry
+    )
+    qalb_test_hashes = {
+        row["source_sha256"] for row in registry if row["split"] == "test"
+    }
+    nahw_hash_set = set(nahw_hashes)
+    for index, row in enumerate(registry):
+        group_key = (
+            row["year"],
+            row["track"],
+            row["split"],
+            row["source_sha256"],
+        )
+        qalb_overlap = row["source_sha256"] in qalb_test_hashes
+        nahw_overlap = row["source_sha256"] in nahw_hash_set
+        train_ok = row["split"] == "train" and not qalb_overlap and not nahw_overlap
+        dev_ok = row["split"] == "dev" and not qalb_overlap and not nahw_overlap
+        reasons = []
+        if row["split"] == "test":
+            reasons.append("official_test_split")
+        if qalb_overlap and row["split"] != "test":
+            reasons.append("exact_source_overlap_with_qalb_test")
+        if nahw_overlap:
+            reasons.append("exact_source_overlap_with_nahw")
+        if train_ok:
+            reasons.append("official_train_split")
+        if dev_ok:
+            reasons.append("official_dev_split")
+        derived = {
+            "duplicate_source_within_split": within_counts[group_key] > 1,
+            "exact_source_overlap_with_qalb_test": qalb_overlap,
+            "exact_source_overlap_with_nahw": nahw_overlap,
+            "eligible_for_training": train_ok,
+            "eligible_for_development": dev_ok,
+            "selection_reason": reasons,
+        }
+        for field, expected in derived.items():
+            if row[field] != expected:
+                raise invalid_row(index, field)
 
 
 def parse_sent(text: str, member: str):
@@ -208,7 +356,8 @@ def parse_m2_sources(text: str):
 
 def load_nahw_hashes(path: Path):
     try:
-        rows = json.loads(path.read_text(encoding="utf-8"))
+        payload = path.read_bytes()
+        rows = json.loads(payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ManifestError(f"Cannot read Nahw-Passage JSON: {path.name}") from error
     if not isinstance(rows, list) or any(
@@ -218,10 +367,18 @@ def load_nahw_hashes(path: Path):
         raise ManifestError(
             "Nahw-Passage JSON must be a list of records with string passage fields"
         )
-    return {sha256_bytes(row["passage"].encode("utf-8")) for row in rows}
+    return (
+        {sha256_bytes(row["passage"].encode("utf-8")) for row in rows},
+        sha256_bytes(payload),
+    )
 
 
-def build_manifest_data(archive_path: Path, nahw_path: Path):
+def build_manifest_data(
+    archive_path: Path,
+    nahw_path: Path,
+    *,
+    expected_split_counts=None,
+):
     archive_path = Path(archive_path)
     nahw_path = Path(nahw_path)
     if not archive_path.is_file():
@@ -229,12 +386,26 @@ def build_manifest_data(archive_path: Path, nahw_path: Path):
     if not nahw_path.is_file():
         raise ManifestError(f"Missing Nahw-Passage file: {nahw_path.name}")
 
-    nahw_hashes = load_nahw_hashes(nahw_path)
+    if expected_split_counts is None:
+        expected_split_counts = CANONICAL_SPLIT_COUNTS
+    expected_keys = {(spec.year, spec.track, spec.split) for spec in SPLITS}
+    if (
+        not isinstance(expected_split_counts, dict)
+        or set(expected_split_counts) != expected_keys
+        or any(
+            not isinstance(count, int) or isinstance(count, bool) or count < 0
+            for count in expected_split_counts.values()
+        )
+    ):
+        raise ManifestError("Invalid expected split counts")
+
+    nahw_hashes, nahw_sha256 = load_nahw_hashes(nahw_path)
     records = []
     member_hashes = {}
+    observed_split_counts = {}
     required_docs = {f"{ROOT_NAME}/README.txt", f"{ROOT_NAME}/LICENSE.txt"}
 
-    with zipfile.ZipFile(archive_path) as archive:
+    with open_hashed_zip(archive_path) as (archive, archive_sha256):
         validate_archive_members(archive)
         names = set(archive.namelist())
         missing_docs = sorted(required_docs - names)
@@ -275,6 +446,16 @@ def build_manifest_data(archive_path: Path, nahw_path: Path):
                     f"Parallel record count mismatch: {spec.stem} "
                     f"(sent={len(sent_rows)}, cor={len(corrections)}, "
                     f"m2={len(m2_sources)})"
+                )
+            observed_count = len(sent_rows)
+            observed_split_counts[split_key(spec)] = observed_count
+            expected_count = expected_split_counts[
+                (spec.year, spec.track, spec.split)
+            ]
+            if observed_count != expected_count:
+                raise ManifestError(
+                    f"Split count mismatch: {split_key(spec)} "
+                    f"observed={observed_count} expected={expected_count}"
                 )
             document_ids = [document_id for document_id, _ in sent_rows]
             if len(document_ids) != len(set(document_ids)):
@@ -359,11 +540,13 @@ def build_manifest_data(archive_path: Path, nahw_path: Path):
         )
 
     metadata = {
-        "archive_sha256": sha256_path(archive_path),
+        "archive_sha256": archive_sha256,
         "archive_filename": archive_path.name,
-        "nahw_sha256": sha256_path(nahw_path),
+        "nahw_sha256": nahw_sha256,
         "nahw_filename": nahw_path.name,
         "member_sha256": dict(sorted(member_hashes.items())),
+        "split_counts": dict(sorted(observed_split_counts.items())),
+        "nahw_passage_source_sha256": sorted(nahw_hashes),
     }
     return records, metadata
 
@@ -394,6 +577,17 @@ def atomic_write(path: Path, payload: bytes) -> None:
         except FileNotFoundError:
             pass
         raise
+
+
+def remove_generator_orphan_temps(output_dir: Path) -> None:
+    for entry in output_dir.iterdir():
+        if not any(
+            entry.name.startswith(prefix) and len(entry.name) > len(prefix)
+            for prefix in OUTPUT_TEMP_PREFIXES
+        ):
+            continue
+        if entry.is_symlink() or entry.is_file():
+            entry.unlink()
 
 
 def write_manifests(registry, metadata, output_dir: Path):
@@ -446,6 +640,7 @@ def write_manifests(registry, metadata, output_dir: Path):
         json.dumps(summary, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
     ).encode("utf-8")
     output_dir.mkdir(parents=True, exist_ok=True)
+    remove_generator_orphan_temps(output_dir)
     existing_names = {path.name for path in output_dir.iterdir()}
     if not existing_names <= EXPECTED_OUTPUT_FILENAMES:
         raise ManifestError("Output directory contains unexpected output entries")
