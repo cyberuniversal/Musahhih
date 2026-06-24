@@ -79,4 +79,4 @@ The generator reads the unchanged QALB ZIP directly. Exact overlap comparisons a
 | `qalb_dev_selection.jsonl` | `563b12a75789ce0865ab341614935d855ab42086fae6e0cdaa26ba17f4de26c8` |
 | `qalb_manifest_summary.json` | `ee413cb049284a7115ee6c75e654ce9f7151207bc2aa3553a245e24d25931155` |
 
-Validation passed for a deterministic rerun and for the output schema/privacy checks. Every generated file is a text-free metadata/hash artifact under an ignored, private path; none is tracked. This manifest-only run performed no model training and no QALB benchmark evaluation.
+Validation passed for a deterministic rerun and for the output schema/privacy checks. Every generated file is a corpus-text-free metadata/hash artifact under an ignored, private path; none is tracked. This manifest-only run performed no model training and no QALB benchmark evaluation.

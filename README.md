@@ -100,7 +100,7 @@ Registered QALB users may place the unchanged release ZIP at the ignored path `d
 python scripts/prepare_qalb_manifests.py
 ```
 
-The script reads the ZIP directly and writes text-free metadata and hashes under ignored `data/processed/qalb/`. It preserves within-split duplicates, excludes train/dev records with exact source overlap against QALB test or Nahw, and keeps every QALB test record evaluation-only. Never commit or redistribute the QALB release or these private outputs.
+The script reads the ZIP directly and writes corpus-text-free metadata and hashes under ignored `data/processed/qalb/`. It preserves within-split duplicates, excludes train/dev records with exact source overlap against QALB test or Nahw, and keeps every QALB test record evaluation-only. Never commit or redistribute the QALB release or these private outputs.
 
 Authenticate with Hugging Face if the selected model is gated:
 

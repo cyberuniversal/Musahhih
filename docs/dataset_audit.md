@@ -60,6 +60,6 @@ The registry contains 22,938 records. The selection contains 19,720 training rec
 
 Within-split duplicated sources are intentionally preserved. The manifest flags 237 records because every member of a duplicated-source group receives the flag. This is distinct from the 121 duplicate excess records, which count only records beyond the first occurrence in each within-split group (total records minus within-split unique-source counts).
 
-The deterministic rerun and schema/privacy checks passed. All outputs are text-free selection metadata and hashes, remain ignored and private, and must not be committed or redistributed. Obtain institutional guidance before creating any persistent transformed corpus copy. This preparation performed no model training and no QALB test evaluation.
+The deterministic rerun and schema/privacy checks passed. All outputs contain no source, correction, annotation, prompt, or passage text; they remain ignored and private and must not be committed or redistributed. Obtain institutional guidance before creating any persistent transformed corpus copy. This preparation performed no model training and no QALB test evaluation.
 
 See `results/qalb_0.9.1_intake.md` for the reproducible intake checks and duplicate counts.
