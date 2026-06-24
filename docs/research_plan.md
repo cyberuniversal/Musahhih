@@ -21,9 +21,14 @@ Test set:
 - Nahw-Passage, held out completely.
 
 Baselines:
-- B0: untouched model, zero-shot
-- B1: untouched model, few-shot
-- B2: untouched model, explicit expert-style correction prompt
+- B0-P1: untouched model, zero-shot
+- B1-P1: untouched model, five-shot with deterministically selected eligible QALB train examples
+- B2-P1: untouched model, explicit expert-style correction prompt with no demonstrations
+
+The exact frozen prompts, demonstration-selection rule, and pre-test validation gate
+are defined in [`prompt_baseline_protocol.md`](prompt_baseline_protocol.md). Run and
+artifact identifiers follow [`experiment_naming.md`](experiment_naming.md). B1 is
+the few-shot family and B2 is the expert-style family; do not reverse these labels.
 
 Primary metric:
 - exact correction accuracy on the highlighted erroneous token, matching Nahw's GEC setup

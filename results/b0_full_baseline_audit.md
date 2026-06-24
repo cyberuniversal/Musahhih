@@ -38,3 +38,7 @@ One record shared by the 25-example pilot and the full run produced different ra
 ## Decision
 
 B0 is frozen as the project's untouched-model baseline with the 16.83% exact-match result and the reproducibility caveat above. Nahw-Passage remains test-only. Do not use its results to tune prompts, choose checkpoints, select training examples, or make repeated model decisions.
+
+The experiment naming convention was registered after this run. Its retrospective
+canonical ID is `B0-P1__gemma3-4b-it__nahw-passage__s3407__r01`. This alias does not
+rename or modify the accepted artifacts and does not indicate a rerun.

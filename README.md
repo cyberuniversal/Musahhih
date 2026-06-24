@@ -50,8 +50,10 @@ The pilot writes `outputs/baseline_pilot_predictions.jsonl` and `outputs/baselin
 │   └── train.sample.jsonl
 ├── docs/
 │   ├── dataset_audit.md
+│   ├── experiment_naming.md
 │   ├── literature_matrix.md
 │   ├── papers.md
+│   ├── prompt_baseline_protocol.md
 │   └── research_plan.md
 ├── notebooks/
 │   └── 01_nahw_baseline_unsloth.ipynb
@@ -59,6 +61,7 @@ The pilot writes `outputs/baseline_pilot_predictions.jsonl` and `outputs/baselin
 │   ├── download_nahw.py
 │   ├── inspect_nahw.py
 │   ├── nahw_baseline_utils.py
+│   ├── prepare_qalb_manifests.py
 │   ├── prepare_nahw_eval.py
 │   ├── run_gemma3_nahw_baseline.py
 │   └── train_lora.py
@@ -127,6 +130,10 @@ Predictions and metrics are written to `outputs/`.
 7. General Arabic capability-retention checks
 
 See [`docs/research_plan.md`](docs/research_plan.md) for the full experimental design.
+The registered run IDs are defined in
+[`docs/experiment_naming.md`](docs/experiment_naming.md), and the frozen B0/B1/B2
+prompt protocols are defined in
+[`docs/prompt_baseline_protocol.md`](docs/prompt_baseline_protocol.md).
 
 ## Foundation
 
