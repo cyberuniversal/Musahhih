@@ -22,6 +22,15 @@ DEFAULT_ARCHIVE = (
 )
 DEFAULT_NAHW = ROOT / "data" / "raw" / "nahw" / "Nahw-Passage.json"
 DEFAULT_OUTPUT_DIR = ROOT / "data" / "processed" / "qalb"
+JSONL_OUTPUT_FILENAMES = (
+    "qalb_registry.jsonl",
+    "qalb_train_selection.jsonl",
+    "qalb_dev_selection.jsonl",
+)
+SUMMARY_OUTPUT_FILENAME = "qalb_manifest_summary.json"
+EXPECTED_OUTPUT_FILENAMES = frozenset(
+    (*JSONL_OUTPUT_FILENAMES, SUMMARY_OUTPUT_FILENAME)
+)
 PUBLIC_RECORD_KEYS = {
     "record_key",
     "release",
@@ -44,6 +53,13 @@ PUBLIC_RECORD_KEYS = {
     "eligible_for_training",
     "eligible_for_development",
     "selection_reason",
+}
+PUBLIC_METADATA_KEYS = {
+    "archive_sha256",
+    "archive_filename",
+    "nahw_sha256",
+    "nahw_filename",
+    "member_sha256",
 }
 
 
@@ -112,6 +128,57 @@ def validate_archive_members(archive: zipfile.ZipFile) -> None:
             raise ManifestError(f"Unsafe ZIP member path: {member}")
         if info.flag_bits & 0x1:
             raise ManifestError(f"Encrypted ZIP member is not supported: {member}")
+
+
+def is_safe_archive_member_name(member) -> bool:
+    if not isinstance(member, str) or not member:
+        return False
+    path = PurePosixPath(member)
+    return not (
+        member.startswith("/")
+        or "\\" in member
+        or ".." in path.parts
+        or (len(member) > 1 and member[1] == ":")
+    )
+
+
+def is_sha256(value) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def validate_manifest_inputs(registry, metadata) -> None:
+    if any(
+        not isinstance(row, dict) or set(row) != PUBLIC_RECORD_KEYS
+        for row in registry
+    ):
+        raise ManifestError("Invalid registry schema")
+    if not isinstance(metadata, dict) or set(metadata) != PUBLIC_METADATA_KEYS:
+        raise ManifestError("Invalid manifest metadata schema")
+    if not is_sha256(metadata["archive_sha256"]) or not is_sha256(
+        metadata["nahw_sha256"]
+    ):
+        raise ManifestError("Invalid manifest metadata hashes")
+    for key in ("archive_filename", "nahw_filename"):
+        filename = metadata[key]
+        if (
+            not isinstance(filename, str)
+            or not filename
+            or "/" in filename
+            or "\\" in filename
+            or filename in {".", ".."}
+            or (len(filename) > 1 and filename[1] == ":")
+        ):
+            raise ManifestError("Invalid manifest metadata filename")
+    member_hashes = metadata["member_sha256"]
+    if not isinstance(member_hashes, dict) or any(
+        not is_safe_archive_member_name(member) or not is_sha256(digest)
+        for member, digest in member_hashes.items()
+    ):
+        raise ManifestError("Invalid manifest metadata member hashes")
 
 
 def parse_sent(text: str, member: str):
@@ -330,6 +397,7 @@ def atomic_write(path: Path, payload: bytes) -> None:
 
 
 def write_manifests(registry, metadata, output_dir: Path):
+    validate_manifest_inputs(registry, metadata)
     output_dir = Path(output_dir)
     train_rows = [row for row in registry if row["eligible_for_training"]]
     dev_rows = [row for row in registry if row["eligible_for_development"]]
@@ -377,9 +445,19 @@ def write_manifests(registry, metadata, output_dir: Path):
     summary_payload = (
         json.dumps(summary, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
     ).encode("utf-8")
-    for name, payload in payloads.items():
-        atomic_write(output_dir / name, payload)
-    atomic_write(output_dir / "qalb_manifest_summary.json", summary_payload)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    existing_names = {path.name for path in output_dir.iterdir()}
+    if not existing_names <= EXPECTED_OUTPUT_FILENAMES:
+        raise ManifestError("Output directory contains unexpected output entries")
+    summary_path = output_dir / SUMMARY_OUTPUT_FILENAME
+    summary_path.unlink(missing_ok=True)
+    try:
+        for name, payload in payloads.items():
+            atomic_write(output_dir / name, payload)
+        atomic_write(summary_path, summary_payload)
+    except BaseException:
+        summary_path.unlink(missing_ok=True)
+        raise
     return summary
 
 

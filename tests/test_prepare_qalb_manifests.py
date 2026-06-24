@@ -5,9 +5,11 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import warnings
 import zipfile
 
+import scripts.prepare_qalb_manifests as manifest_module
 from scripts.prepare_qalb_manifests import (
     ManifestError,
     PUBLIC_RECORD_KEYS,
@@ -129,15 +131,16 @@ class QalbManifestTests(unittest.TestCase):
         self.assertEqual(set(first_files), expected_files)
         self.assertEqual(first_files, second_files)
         self.assertEqual(first_summary, second_summary)
+        private_values = {
+            value
+            for rows in GROUPS.values()
+            for _, source, correction in rows
+            for value in (source, correction)
+        }
+        private_values.update({"NAHW_MATCH", str(self.root.resolve())})
         for payload in first_files.values():
             self.assertNotIn(b"\r\n", payload)
-            for private_value in (
-                "TRAIN_KEEP",
-                "TRAIN_FIXED",
-                "QALB_TEST_MATCH",
-                "NAHW_MATCH",
-                str(self.root.resolve()),
-            ):
+            for private_value in private_values:
                 self.assertNotIn(private_value.encode("utf-8"), payload)
 
         registry_rows = [
@@ -168,6 +171,87 @@ class QalbManifestTests(unittest.TestCase):
                 first_summary["output_sha256"][filename],
                 hashlib.sha256(first_files[filename]).hexdigest(),
             )
+
+    def test_rejects_private_registry_fields_before_creating_output(self):
+        registry, metadata = build_manifest_data(self.archive, self.nahw)
+        private_sentinel = "PRIVATE_SOURCE_SENTINEL"
+        invalid_registry = [dict(row) for row in registry]
+        invalid_registry[0]["source"] = private_sentinel
+        output_dir = self.root / "invalid-registry-output"
+
+        with self.assertRaisesRegex(ManifestError, "registry schema") as caught:
+            write_manifests(invalid_registry, metadata, output_dir)
+
+        self.assertFalse(output_dir.exists())
+        self.assertNotIn(private_sentinel, str(caught.exception))
+
+    def test_rejects_invalid_metadata_before_creating_output(self):
+        registry, metadata = build_manifest_data(self.archive, self.nahw)
+        absolute_path = str(self.archive.resolve())
+        cases = {
+            "unexpected_absolute_path_field": {
+                **metadata,
+                "archive_path": absolute_path,
+            },
+            "absolute_filename": {
+                **metadata,
+                "archive_filename": absolute_path,
+            },
+            "drive_relative_filename": {
+                **metadata,
+                "archive_filename": "C:private.zip",
+            },
+        }
+
+        for case_name, invalid_metadata in cases.items():
+            with self.subTest(case_name=case_name):
+                output_dir = self.root / f"invalid-metadata-{case_name}"
+                with self.assertRaisesRegex(ManifestError, "metadata") as caught:
+                    write_manifests(registry, invalid_metadata, output_dir)
+                self.assertFalse(output_dir.exists())
+                self.assertNotIn(absolute_path, str(caught.exception))
+
+    def test_failed_jsonl_replacement_invalidates_and_can_recover_generation(self):
+        registry, metadata = build_manifest_data(self.archive, self.nahw)
+        output_dir = self.root / "recoverable-output"
+        write_manifests(registry, metadata, output_dir)
+        valid_files = {
+            path.name: path.read_bytes() for path in sorted(output_dir.iterdir())
+        }
+        original_atomic_write = manifest_module.atomic_write
+
+        def fail_during_jsonl_replacement(path, payload):
+            if Path(path).name == "qalb_train_selection.jsonl":
+                raise OSError("injected JSONL replacement failure")
+            original_atomic_write(path, payload)
+
+        with mock.patch.object(
+            manifest_module,
+            "atomic_write",
+            side_effect=fail_during_jsonl_replacement,
+        ):
+            with self.assertRaisesRegex(OSError, "injected JSONL"):
+                write_manifests(registry, metadata, output_dir)
+
+        self.assertFalse((output_dir / "qalb_manifest_summary.json").exists())
+        write_manifests(registry, metadata, output_dir)
+        recovered_files = {
+            path.name: path.read_bytes() for path in sorted(output_dir.iterdir())
+        }
+        self.assertEqual(recovered_files, valid_files)
+
+    def test_rejects_unrelated_stale_file_without_invalidating_summary(self):
+        registry, metadata = build_manifest_data(self.archive, self.nahw)
+        output_dir = self.root / "stale-output"
+        write_manifests(registry, metadata, output_dir)
+        summary_path = output_dir / "qalb_manifest_summary.json"
+        original_summary = summary_path.read_bytes()
+        (output_dir / "unrelated.txt").write_text("stale", encoding="utf-8")
+
+        with self.assertRaisesRegex(ManifestError, "unexpected output"):
+            write_manifests(registry, metadata, output_dir)
+
+        self.assertEqual(summary_path.read_bytes(), original_summary)
 
     def test_cli_accepts_explicit_private_paths(self):
         output_dir = self.root / "cli-output"
