@@ -16,6 +16,8 @@ GitHub issue: https://github.com/ALBA7OOTH-Research-Lab/Musahhih/issues/2
 - B1-P1 and B2-P1 templates are rendered from frozen public protocol text.
 - B1 selection uses the frozen content-neutral identity digest rule: `SHA-256(candidate_identity + "|B1-P1")`.
 - The B1 private bundle writer refuses to overwrite an existing bundle.
+- The B1 private bundle writer refuses output paths outside ignored
+  `data/processed/qalb/` unless a deliberate diagnostic override is supplied.
 - The run scaffold refuses to overwrite an existing run directory.
 - Nahw-Passage execution remains gated behind an explicit `--confirm-final-eval` flag.
 - No QALB corpus text, private generated bundle, model output, credential, checkpoint, adapter, or large artifact is committed in this report.
@@ -28,7 +30,7 @@ Public synthetic validation is implemented for:
 - filtering non-train, ineligible, multi-token, empty, repeated-token, same-token, out-of-length, and non-`Edit` candidates;
 - deterministic candidate ordering and distinct-record selection;
 - selected-identity hash calculation;
-- private bundle non-overwrite behavior;
+- private bundle non-overwrite and private-output-root behavior;
 - canonical experiment IDs;
 - canonical output directory non-overwrite behavior;
 - final Nahw-Passage gate; and
@@ -42,6 +44,12 @@ Private validation not run in this local session:
 - model loading or QALB-development generation capture.
 
 Reason: those checks require private licensed QALB artifacts and/or model runtime. The implementation keeps the commands and checks available for a licensed team member without exposing private text in Git.
+
+Additional reviewer validation on 2026-06-25 confirmed that real local B1 bundle
+generation under `data/processed/qalb/` reproduced 3,116 candidate annotations,
+458 distinct records, five selected demonstrations, and selected identity SHA-256
+`76edd4c3de4b6cb5a985464faa066dea40faf9b25b8fa2912b3bf9c4750a9e8c`. The
+temporary text-bearing bundle was deleted after the check.
 
 ## Next review focus
 

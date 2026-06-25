@@ -1,5 +1,7 @@
 import hashlib
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -146,7 +148,7 @@ class B1PromptBundleTests(unittest.TestCase):
                 expected_identity_sha256="0" * 64,
             )
 
-    def test_write_private_bundle_refuses_overwrite_and_records_hashes(self):
+    def test_write_private_bundle_override_refuses_overwrite_and_records_hashes(self):
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "bundle.json"
             selected, summary = select_b1_candidates(
@@ -154,7 +156,12 @@ class B1PromptBundleTests(unittest.TestCase):
                 limit=1,
             )
 
-            metadata = write_private_bundle(output, selected, summary)
+            metadata = write_private_bundle(
+                output,
+                selected,
+                summary,
+                allow_outside_private_root=True,
+            )
             payload = json.loads(output.read_text(encoding="utf-8"))
 
             self.assertEqual(payload["schema_version"], 1)
@@ -163,7 +170,32 @@ class B1PromptBundleTests(unittest.TestCase):
             self.assertEqual(payload["demonstrations"][0]["correction"], "باء")
             self.assertEqual(metadata["bundle_sha256"], hashlib.sha256(output.read_bytes()).hexdigest())
             with self.assertRaisesRegex(BundleError, "already exists"):
+                write_private_bundle(
+                    output,
+                    selected,
+                    summary,
+                    allow_outside_private_root=True,
+                )
+
+    def test_write_private_bundle_requires_private_output_root_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "bundle.json"
+            selected, summary = select_b1_candidates(
+                [self.make_record("r-good", "a b c d e f", edit(1, 2, "bee"))],
+                limit=1,
+            )
+
+            with self.assertRaisesRegex(BundleError, "must stay under"):
                 write_private_bundle(output, selected, summary)
+
+    def test_documented_module_cli_invocation_is_available(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "scripts.prepare_b1_prompt_bundle", "--help"],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        self.assertIn("--allow-outside-private-output", result.stdout)
 
 
 if __name__ == "__main__":

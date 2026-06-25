@@ -119,7 +119,7 @@ Licensed QALB users can generate the private B1 demonstration bundle only after
 creating the text-free QALB manifests above:
 
 ```bash
-python scripts/prepare_b1_prompt_bundle.py
+python -m scripts.prepare_b1_prompt_bundle
 ```
 
 The B1 bundle is text-bearing and is written under ignored `data/processed/qalb/`.
@@ -127,6 +127,9 @@ Do not print, commit, attach, or redistribute it. The command fails closed unles
 the frozen structural checks match: 3,116 candidate annotations, 458 distinct
 records, and selected identity SHA-256
 `76edd4c3de4b6cb5a985464faa066dea40faf9b25b8fa2912b3bf9c4750a9e8c`.
+By default, the bundle writer refuses output paths outside `data/processed/qalb/`;
+the override flag is only for temporary local diagnostics and must not be used
+for committed artifacts.
 
 Canonical output directories for prompt-baseline runs use:
 

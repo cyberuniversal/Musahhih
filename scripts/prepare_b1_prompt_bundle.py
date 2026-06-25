@@ -9,7 +9,7 @@ QALB text-bearing output must stay in ignored private paths such as
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
@@ -36,6 +36,7 @@ EXPECTED_SELECTED_IDENTITY_SHA256 = (
 )
 DEFAULT_TRAIN_MANIFEST = DEFAULT_OUTPUT_DIR / "qalb_train_selection.jsonl"
 DEFAULT_BUNDLE = DEFAULT_OUTPUT_DIR / "b1_p1_prompt_bundle.json"
+PRIVATE_OUTPUT_ROOT = DEFAULT_OUTPUT_DIR.resolve()
 
 
 class BundleError(ValueError):
@@ -223,10 +224,22 @@ def write_private_bundle(
     output_path: Path,
     selected: list[SelectedCandidate],
     summary: dict,
+    *,
+    allow_outside_private_root: bool = False,
 ) -> dict:
     """Write a text-bearing private bundle and refuse overwrite."""
 
     output_path = Path(output_path)
+    resolved_output = output_path.resolve()
+    if not allow_outside_private_root:
+        try:
+            resolved_output.relative_to(PRIVATE_OUTPUT_ROOT)
+        except ValueError as error:
+            raise BundleError(
+                "Private B1 bundle output must stay under "
+                f"{PRIVATE_OUTPUT_ROOT}. Use --allow-outside-private-output only "
+                "for temporary local diagnostics, never for committed artifacts."
+            ) from error
     if output_path.exists():
         raise BundleError(f"Private bundle already exists: {output_path.name}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -338,6 +351,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=DEFAULT_BUNDLE)
     parser.add_argument("--limit", type=int, default=5)
     parser.add_argument(
+        "--allow-outside-private-output",
+        action="store_true",
+        help=(
+            "Allow writing the text-bearing private bundle outside "
+            "data/processed/qalb/ for temporary local diagnostics only."
+        ),
+    )
+    parser.add_argument(
         "--skip-frozen-count-checks",
         action="store_true",
         help="Only for synthetic/local diagnostics; do not use for the frozen run.",
@@ -355,7 +376,12 @@ def main() -> None:
         selected, summary = select_b1_candidates(records, limit=args.limit)
         if not args.skip_frozen_count_checks:
             validate_selection_summary(summary)
-        metadata = write_private_bundle(args.output, selected, summary)
+        metadata = write_private_bundle(
+            args.output,
+            selected,
+            summary,
+            allow_outside_private_root=args.allow_outside_private_output,
+        )
     except (BundleError, OSError, json.JSONDecodeError, zipfile.BadZipFile) as error:
         raise SystemExit(f"ERROR: {error}") from error
     public_summary = {
