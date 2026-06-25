@@ -106,6 +106,40 @@ python scripts/prepare_qalb_manifests.py
 
 The script reads the ZIP directly and writes corpus-text-free metadata and hashes under ignored `data/processed/qalb/`. It preserves within-split duplicates, excludes train/dev records with exact source overlap against QALB test or Nahw, and keeps every QALB test record evaluation-only. Never commit or redistribute the QALB release or these private outputs.
 
+### B1-P1/B2-P1 prompt baseline scaffolding
+
+The frozen prompt-only baselines are implemented as public scaffolding with private
+data kept out of Git:
+
+```bash
+python -m unittest tests.test_baseline_prompts tests.test_prepare_b1_prompt_bundle tests.test_run_prompt_baseline -q
+```
+
+Licensed QALB users can generate the private B1 demonstration bundle only after
+creating the text-free QALB manifests above:
+
+```bash
+python scripts/prepare_b1_prompt_bundle.py
+```
+
+The B1 bundle is text-bearing and is written under ignored `data/processed/qalb/`.
+Do not print, commit, attach, or redistribute it. The command fails closed unless
+the frozen structural checks match: 3,116 candidate annotations, 458 distinct
+records, and selected identity SHA-256
+`76edd4c3de4b6cb5a985464faa066dea40faf9b25b8fa2912b3bf9c4750a9e8c`.
+
+Canonical output directories for prompt-baseline runs use:
+
+```text
+outputs/<experiment-id>/predictions.jsonl
+outputs/<experiment-id>/summary.json
+outputs/<experiment-id>/run.log
+```
+
+`scripts/run_prompt_baseline.py` refuses to overwrite an existing run directory
+and refuses `nahw-passage` unless `--confirm-final-eval` is passed deliberately.
+Use QALB development for technical validation before any final Nahw-Passage run.
+
 Authenticate with Hugging Face if the selected model is gated:
 
 ```bash
