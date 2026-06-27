@@ -143,6 +143,39 @@ outputs/<experiment-id>/run.log
 and refuses `nahw-passage` unless `--confirm-final-eval` is passed deliberately.
 Use QALB development for technical validation before any final Nahw-Passage run.
 
+The private JSONL input contract is one object per line with `record_id`,
+`passage`, and `error` strings. `gold_correction` may be a string or null, and
+`metadata` may be an object. Keep this text-bearing file under ignored
+`data/processed/` (or outside the repository). To create a hash-audited planned
+run without loading a model:
+
+```bash
+python -m scripts.run_prompt_baseline \
+  --protocol-id B2-P1 \
+  --evaluation-slug qalb14-dev \
+  --input data/processed/qalb/prompt_records.jsonl \
+  --prompt-template docs/prompt_baseline_protocol.md
+```
+
+Execution is opt-in and requires a pinned Hugging Face revision. B1-P1 also
+requires the private bundle created above; B2-P1 rejects a bundle:
+
+```bash
+python -m scripts.run_prompt_baseline \
+  --protocol-id B1-P1 \
+  --evaluation-slug qalb14-dev \
+  --input data/processed/qalb/prompt_records.jsonl \
+  --prompt-template docs/prompt_baseline_protocol.md \
+  --bundle data/processed/qalb/b1_prompt_bundle.json \
+  --model-revision <immutable-commit-sha> \
+  --execute
+```
+
+Predictions contain private prompts and model responses and therefore remain
+ignored under `outputs/`. The runner records input, template, bundle, prompt,
+and prediction hashes plus runtime metadata. A failed inference keeps a partial
+prediction file and marks the run `invalid`; reruns must use a new experiment ID.
+
 Authenticate with Hugging Face if the selected model is gated:
 
 ```bash
