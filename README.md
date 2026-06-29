@@ -58,14 +58,35 @@ The pilot writes `outputs/baseline_pilot_predictions.jsonl` and `outputs/baselin
 │   └── research_plan.md
 ├── notebooks/
 │   └── 01_nahw_baseline_unsloth.ipynb
+├── results/
+│   ├── b0_full_baseline_audit.md
+│   ├── b1_b2_prompt_baseline_validation.md
+│   ├── prompt_inference_core_validation.md
+│   └── qalb_0.9.1_intake.md
 ├── scripts/
+│   ├── baseline_prompts.py
 │   ├── download_nahw.py
 │   ├── inspect_nahw.py
 │   ├── nahw_baseline_utils.py
+│   ├── prepare_b1_prompt_bundle.py
 │   ├── prepare_qalb_manifests.py
 │   ├── prepare_nahw_eval.py
 │   ├── run_gemma3_nahw_baseline.py
+│   ├── run_prompt_baseline.py
 │   └── train_lora.py
+├── tests/
+│   ├── test_baseline_prompts.py
+│   ├── test_inspect_nahw_cli.py
+│   ├── test_nahw_baseline_utils.py
+│   ├── test_prepare_b1_prompt_bundle.py
+│   ├── test_prepare_nahw_eval_cli.py
+│   ├── test_prepare_qalb_manifests.py
+│   └── test_run_prompt_baseline.py
+├── .github/
+│   ├── ISSUE_TEMPLATE/
+│   ├── workflows/
+│   ├── CODEOWNERS
+│   └── pull_request_template.md
 ├── .gitignore
 ├── README.md
 └── requirements.txt
