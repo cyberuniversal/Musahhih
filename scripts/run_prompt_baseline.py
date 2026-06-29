@@ -31,6 +31,7 @@ from scripts.nahw_baseline_utils import parse_model_response
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUTS = ROOT / "outputs"
+DEFAULT_MAX_NEW_TOKENS = 32
 PRIVATE_REPOSITORY_ROOTS = (
     ROOT / "data" / "processed",
     DEFAULT_OUTPUTS,
@@ -577,7 +578,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-slug", default="gemma3-4b-it")
     parser.add_argument("--model", default="google/gemma-3-4b-it")
     parser.add_argument("--model-revision")
-    parser.add_argument("--max-new-tokens", type=int, default=24)
+    parser.add_argument("--max-new-tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS)
     parser.add_argument("--evaluation-slug", required=True)
     parser.add_argument("--seed", type=int, default=3407)
     parser.add_argument("--replicate", type=int, default=1)

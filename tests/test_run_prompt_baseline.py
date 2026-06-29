@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from scripts.run_prompt_baseline import (
+    DEFAULT_MAX_NEW_TOKENS,
     ROOT,
     PromptRecord,
     RunConfig,
@@ -380,6 +381,7 @@ class PromptBaselineRunTests(unittest.TestCase):
         self.assertIn("--execute", result.stdout)
         self.assertIn("--model-revision", result.stdout)
         self.assertIn("--allow-outside-private-output", result.stdout)
+        self.assertEqual(DEFAULT_MAX_NEW_TOKENS, 32)
 
     def test_cli_defaults_to_planned_scaffold(self):
         with tempfile.TemporaryDirectory() as tmp:
